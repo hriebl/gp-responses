@@ -1,0 +1,35 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+library(purrr)
+library(requirements)
+```
+
+# gp-responses
+
+<!-- badges: start -->
+<!-- badges: end -->
+
+This repository contains the code for my paper on Gaussian process responses in distributional regression, i.e. the scripts for the simulation study, the application section, and the figures. These scripts build on the following R packages, which I develop in separate repositories:
+
+- [bamlssAPI](https://github.com/hriebl/bamlssAPI)
+- [bamlssGP](https://github.com/hriebl/bamlssGP)
+- [ggnuplot](https://github.com/hriebl/ggnuplot)
+
+Here is the full list of R packages that are required to run the code in this repository:
+
+```{r req, echo = FALSE, results = "asis"}
+files <- system2("git", "ls-files", stdout = TRUE)
+files <- files[grep("\\.(R|Rmd|Rpres|Rnw)$", files, ignore.case = TRUE)]
+req <- sort(unique(simplify(map(files, req_file))))
+cat(paste("-", req, collapse = "\n"))
+```

@@ -1,0 +1,100 @@
+---
+output: md_document
+---
+
+# GP Responses -- Simulation Study
+
+```{r setup, include = FALSE}
+library(here)
+library(parallel)
+source(here("simulation", "scenarios.R"))
+dir.create(here("simulation", "output"))
+
+knitr::opts_chunk$set(
+  dev        = "cairo_pdf",
+  fig.path   = here("simulation", "output/"),
+  fig.width  = 8,
+  fig.height = 4,
+  echo       = FALSE,
+  results    = "hide",
+  message    = FALSE
+)
+```
+
+```{r session, echo = TRUE, results = "markup"}
+Sys.time()
+devtools::session_info()
+system2("git", "log -1", stdout = TRUE)
+system2("git", "diff", stdout = TRUE)
+set.seed(1337)
+```
+
+## Joint sampling
+
+```{r joint}
+grid <- expand.grid(rep = 1:100, n = 30, N = 30)
+grid$seed <- sample.int(2^16, nrow(grid))
+grid <- grid[c("N", "n", "rep", "seed")]
+
+save(grid, file = here("simulation", "output", "joint-grid.RData"))
+
+mclapply(
+  X = 1:nrow(grid),
+  FUN = function(i) {
+    scenario <- do.call(joint, c(grid[i,], intercept = 0))
+    file <- here("simulation", "output", sprintf("joint-%03d-large.RData", i))
+    save(joint, file = file, envir = scenario)
+
+    scenario <- do.call(joint, c(grid[i,], intercept = -3))
+    file <- here("simulation", "output", sprintf("joint-%03d-small.RData", i))
+    save(joint, file = file, envir = scenario)
+
+    NULL
+  },
+  mc.cores = 128
+)
+```
+
+## Time-varying covariates
+
+```{r covariates}
+grid <- expand.grid(rep = 1:100, n = c(60, 120), N = c(30, 60, 120))
+grid$seed <- sample.int(2^16, nrow(grid))
+grid <- grid[c("N", "n", "rep", "seed")]
+
+save(grid, file = here("simulation", "output", "covariates-grid.RData"))
+
+mclapply(
+  X = 1:nrow(grid),
+  FUN = function(i) {
+    scenario <- do.call(covariates, grid[i,])
+    file <- here("simulation", "output", sprintf("covariates-%03d.RData", i))
+    save(joint, file = file, envir = scenario)
+
+    NULL
+  },
+  mc.cores = 128
+)
+```
+
+## Processes on a sphere
+
+```{r sphere}
+grid <- expand.grid(rep = 1:100, n = 379, N = 30)
+grid$seed <- sample.int(2^16, nrow(grid))
+grid <- grid[c("N", "n", "rep", "seed")]
+
+save(grid, file = here("simulation", "output", "sphere-grid.RData"))
+
+mclapply(
+  X = 1:nrow(grid),
+  FUN = function(i) {
+    scenario <- do.call(sphere, grid[i,])
+    file <- here("simulation", "output", sprintf("sphere-%03d.RData", i))
+    save(joint, file = file, envir = scenario)
+
+    NULL
+  },
+  mc.cores = 128
+)
+```
