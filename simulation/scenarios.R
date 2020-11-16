@@ -64,7 +64,7 @@ covariates <- function(N = 30, n = 60, rep = 1, seed = 1337) {
 
   linear1 <- x <- runif(N, 1, 2)
 
-  s <- seq.int(1, 180, length.out = n)
+  s <- seq.int(0, 182, length.out = n)
   D <- as.matrix(dist(s))
 
   q <- q_fun(s)
@@ -74,7 +74,7 @@ covariates <- function(N = 30, n = 60, rep = 1, seed = 1337) {
   covariance <- c_fun_matern(D, stddev, range, qq)
   y <- rmvnorm_c(N, mean, covariance)
 
-  Z <- rmvnorm_c(N, 0, c_fun_gauss(D, 80, 30) + diag(n))
+  Z <- rmvnorm_c(N, 0, c_fun_gauss(D, 80, 30, qq) + diag(n))
 
   y <- array_branch(y, 2)
   Z <- array_branch(Z, 2)
