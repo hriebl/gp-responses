@@ -2,4 +2,11 @@
 .Rhistory
 .RData
 .Ruserdata
+application/*.txt
+application/*.zip
+application/smooth/*.dat
+application/smooth/*.pdf
+figures/output
+figures/crown/*.dat
+figures/crown/*.pdf
 simulation/output
