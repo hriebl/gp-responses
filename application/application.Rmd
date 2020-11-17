@@ -1,0 +1,370 @@
+---
+output: md_document
+---
+
+# GP Responses -- Application
+
+```{r setup, include = FALSE}
+library(bamlss)
+library(bamlssGP)
+library(dplyr)
+library(ggnuplot)
+library(ggplot2)
+library(here)
+library(janitor)
+library(mvtnorm)
+library(purrr)
+library(readr)
+library(sf)
+
+source(here("figures", "utils.R"))
+dir.create(here("figures", "output"))
+
+source(here("simulation", "scenarios.R"))
+dir.create(here("simulation", "output"))
+
+knitr::knit_hooks$set(crop = knitr::hook_pdfcrop)
+
+knitr::opts_chunk$set(
+  dev        = "cairo_pdf",
+  fig.path   = here("figures", "output/"),
+  fig.width  = 8,
+  fig.height = 4,
+  crop       = TRUE,
+  echo       = FALSE,
+  results    = "hide",
+  message    = FALSE
+)
+```
+
+```{r session, echo = TRUE, results = "markup"}
+Sys.time()
+devtools::session_info()
+system2("git", "log -1", stdout = TRUE)
+system2("git", "diff", stdout = TRUE)
+set.seed(1337)
+```
+
+## Model
+
+```{r model}
+# download the field plots data from
+# https://www.bexis.uni-jena.de/PublicData/PublicData.aspx?DatasetId=1000
+
+plots <- read_tsv(here("application", "field-plots.txt"))
+
+# download the dendrometer data from
+# https://www.bexis.uni-jena.de/PublicData/PublicData.aspx?DatasetId=17766
+
+dendro <- read_tsv(here("application", "dendrometers.txt"),
+                   na = c("", "NA", "."))
+
+dendro <- dendro %>%
+  group_by(dendroNr, year, DOY) %>%
+  summarize(
+    species = first(Art),
+    plot    = first(Plot),
+    growth  = mean(RAZ_kum, na.rm = TRUE),
+    dbh     = mean(RAH, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  rename(
+    tree = dendroNr,
+    day  = DOY
+  ) %>%
+  filter(
+    !is.na(growth),
+    species %in% c("Es", "Bu", "BAh"),
+    (year = 2012 & (day >= 92 & day <= 274)) |
+    (year = 2013 & (day >= 91 & day <= 273))
+  ) %>%
+  group_by(tree, year) %>%
+  mutate(
+    day    = day - first(day),
+    growth = growth - first(growth)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    year    = as.factor(year),
+    day     = as.integer(day),
+    species = factor(species, c("Bu", "Es", "BAh"),
+                     c("Beech", "Ash", "Sycamore"))
+  )
+
+covariates <- dendro %>%
+  group_by(tree, year) %>%
+  summarize(
+    species = first(species),
+    plot    = first(plot),
+    dbh     = mean(dbh)
+  ) %>%
+  ungroup() %>%
+  left_join(plots, by = c("plot" = "EP_Plot_ID")) %>%
+  clean_names() %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 25832) %>%
+  bind_cols(., as_tibble(st_coordinates(.))) %>%
+  rename(x = X, y = Y) %>%
+  mutate(
+    dbh = scale(dbh),
+    x   = (x - mean(x)) / sd(y),
+    y   = (y - mean(y)) / sd(y)
+  )
+
+family_args <- dendro %>%
+  group_by(tree, year) %>%
+  summarize(
+    y = list(growth),
+    s = list(day),
+    D = list(as.matrix(dist(day))),
+    q = list(if_else(day < 30, 0.1 + 0.9 / 30 * day, 1))
+  ) %>%
+  ungroup() %>%
+  as.list()
+
+family_args$initial_par <- pmap_dfr(
+  .l = family_args,
+  .f = function(y, s, D, q, ...) {
+    par <- c(
+      limit  = last(y),
+      shape  = 3.5,
+      scale  = 100,
+      stddev = 45,
+      range  = 2
+    )
+
+    opt <- optim(
+      par = log(par),
+      fn  = function(par) {
+        par <- exp(par)
+
+        d <- dmvnorm(
+          x     = y,
+          mean  = bamlssGP:::m_fun(s, par[1], par[2], par[3]),
+          sigma = bamlssGP:::c_fun_matern(D, par[4], par[5], tcrossprod(q)),
+          log   = TRUE
+        )
+
+        -d
+      }
+    )
+
+    tibble(!!!exp(opt$par))
+  }
+)
+
+family <- do.call(gp_weibull_bamlss, family_args)
+
+model <- bamlss(
+  formula = list(
+    limit  = rep(0, nrow(covariates)) ~ tree*year,
+    shape  = ~ species + dbh + plot*year,
+    scale  = ~ species + dbh + plot*year,
+    stddev = ~ species + dbh + year + s(x, y, k = 16, bs = "gp", m = c(3, 0.153), by = year),
+    range  = ~ species + dbh
+  ),
+  family  = family,
+  data    = covariates,
+  update  = "optim",
+  sampler = FALSE
+)
+
+joint <- sample_bamlss_gp(model, n = 12000)
+save.image(here("application", "model.RData"))
+```
+
+## Summary statistics
+
+```{r summary}
+# load(here("application", "model.RData"))
+
+samples <- tidy_samples(joint$samples) %>%
+  filter(iteration > 2000)
+
+smmry <- samples %>%
+  group_by(predictor, smooth, covariate) %>%
+  summarize(
+    ess   = effectiveSize(sample),
+    pmean = mean(sample)
+  )
+
+# update model with posterior mean estimates
+
+for (prd in names(model$parameters)) {
+  if ("p" %in% names(model$parameters[[prd]])) {
+    df <- smmry %>% filter(predictor == prd, smooth == "p")
+    model$parameters[[prd]][["p"]][df$covariate] <- df$pmean
+  }
+
+  for (smt in names(model$parameters[[prd]][["s"]])) {
+    df <- smmry %>% filter(predictor == prd, smooth == smt)
+    model$parameters[[prd]][["s"]][[smt]][df$covariate] <- df$pmean
+  }
+}
+
+# print summary table for paper
+
+samples %>%
+  filter(covariate %in% c("speciesAsh", "dbh")) %>%
+  group_by(predictor, covariate) %>%
+  summarize(
+    mean  = mean(sample),
+    q0025 = quantile(sample, 0.025),
+    q0500 = quantile(sample, 0.500),
+    q0975 = quantile(sample, 0.975)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    predictor = factor(predictor, c("shape", "scale", "stddev", "range"))
+  ) %>%
+  arrange(desc(covariate), predictor) %>%
+  knitr::kable(format = "markdown", digits = 3)
+```
+
+## Figures
+
+```{r application-data}
+set.seed(1337)
+
+df <- covariates %>%
+  select(tree, year) %>%
+  sample_n(30) %>%
+  left_join(dendro, by = c("tree", "year"))
+
+p <- ggplot(
+    data = df,
+    mapping = aes(
+      x     = day,
+      y     = growth,
+      group = interaction(tree, year),
+      color = species,
+    )
+  ) +
+  geom_line(alpha = 0.5, color = "gray70", size = 0.4) +
+  xlab("Date of 2012 or 2013 respectively [daily data]") +
+  ylab("Cumulative radial growth [micrometers]") +
+  scale_x_gnuplot(
+    breaks = c(0, 29, 60, 90, 121, 152, 182),
+    labels = c("Apr 1", "May 1", "Jun 1", "Jul 1", "Aug 1", "Sep 1", "Oct 1"),
+    expand = c(0, 0)
+  ) +
+  scale_y_gnuplot(breaks = waiver()) +
+  scale_color_gnuplot(name = "Species") +
+  guides(color = guide_legend(override.aes = list(size = 0.8))) +
+  theme_gnuplot(base_family = "TeXGyreHeros")
+
+predictions <- covariates %>%
+  bind_cols(predict(model, type = "parameter")) %>%
+  select(tree, year, limit:range)
+
+highlight <- dendro %>%
+  filter(tree %in% c("HA_011", "HA_015"), year == "2012") %>%
+  left_join(predictions, by = c("tree", "year"))
+
+p <- p + geom_line(data = highlight, size = 0.4)
+
+highlight <- highlight %>%
+  mutate(growth = bamlssGP:::m_fun(day, limit, shape, scale))
+
+p + geom_line(data = highlight, size = 0.8)
+```
+
+```{r smooth}
+xrange <- NULL
+yrange <- NULL
+
+for (exploratory in c("ALB", "HAI", "SCH")) {
+  x <- covariates$x[covariates$exploratory == exploratory]
+
+  xmin <- min(x) - 0.0125
+  xmax <- max(x) + 0.0125
+
+  xrange <- rbind(xrange, c(xmin, xmax))
+
+  y <- covariates$y[covariates$exploratory == exploratory]
+
+  ymin <- min(y) - 0.0125
+  ymax <- max(y) + 0.0125
+
+  yrange <- rbind(yrange, c(ymin, ymax))
+
+  for (year in c("2012", "2013")) {
+    newdata <- expand.grid(
+      year = year,
+      x    = seq.int(xmin, xmax, length.out = 100),
+      y    = seq.int(ymin, ymax, length.out = 100)
+    )
+
+    prediction <- predict(
+      object      = model,
+      newdata     = newdata,
+      model       = "stddev",
+      term        = "s(x,y,by=year)",
+      match.names = FALSE,
+      intercept   = FALSE
+    )
+
+    prediction <- data.frame(
+      x          = round(newdata$x, 5),
+      y          = round(newdata$y, 5),
+      prediction = round(prediction, 5)
+    )
+
+    file <- paste0(exploratory, "-", year, ".dat")
+    path <- here("application", "smooth", file)
+
+    write.table(prediction, path, quote = FALSE, row.names = FALSE)
+  }
+}
+
+scaling <- 0.4 / max(apply(yrange, 1, diff))
+
+height <- round(scaling * apply(yrange, 1, diff), 3)
+
+0.95 - height[1]
+0.55 + height[2]
+
+0.45 - height[1]
+0.05 + height[2]
+
+width <- round(scaling * apply(xrange, 1, diff), 3)
+
+0.11 + width[1]
+0.11 + width[2]
+0.11 + width[2] + 0.05
+0.11 + width[2] + 0.05 + width[3]
+0.11 + width[2] + 0.05 + width[3] + 0.05
+
+sites <- covariates %>%
+  filter(exploratory == "ALB") %>%
+  select(x, y) %>%
+  unique()
+
+write.table(sites, here("application", "smooth", "ALB-plots.dat"),
+            quote = FALSE, row.names = FALSE)
+
+sites <- covariates %>%
+  filter(exploratory == "HAI") %>%
+  select(x, y) %>%
+  unique()
+
+write.table(sites, here("application", "smooth", "HAI-plots.dat"),
+            quote = FALSE, row.names = FALSE)
+
+sites <- covariates %>%
+  filter(exploratory == "SCH") %>%
+  select(x, y) %>%
+  unique()
+
+write.table(sites, here("application", "smooth", "SCH-plots.dat"),
+            quote = FALSE, row.names = FALSE)
+
+system(paste("cd", here("application", "smooth"), "&& gnuplot smooth.gp"))
+system2("pdfcrop", rep(here("application", "smooth", "smooth.pdf"), 2))
+
+file.copy(
+  from = here("application", "smooth", "smooth.pdf"),
+  to = here("figures", "output", "application-smooth-1.pdf"),
+  overwrite = TRUE
+)
+```
