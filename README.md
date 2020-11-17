@@ -22,11 +22,24 @@ this repository:
 
   - bamlss
   - bamlssGP
+  - coda
   - devtools
+  - dplyr
+  - forcats
+  - fuzzyjoin
   - geosphere
+  - ggnuplot
+  - ggplot2
   - here
+  - janitor
   - knitr
+  - mvtnorm
   - parallel
   - purrr
+  - readr
   - requirements
   - rmarkdown
+  - scales
+  - sf
+  - stringr
+  - tidyr
