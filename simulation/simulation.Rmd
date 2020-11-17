@@ -7,14 +7,21 @@ output: md_document
 ```{r setup, include = FALSE}
 library(here)
 library(parallel)
+
+source(here("figures", "utils.R"))
+dir.create(here("figures", "output"))
+
 source(here("simulation", "scenarios.R"))
 dir.create(here("simulation", "output"))
 
+knitr::knit_hooks$set(crop = knitr::hook_pdfcrop)
+
 knitr::opts_chunk$set(
   dev        = "cairo_pdf",
-  fig.path   = here("simulation", "output/"),
+  fig.path   = here("figures", "output/"),
   fig.width  = 8,
   fig.height = 4,
+  crop       = TRUE,
   echo       = FALSE,
   results    = "hide",
   message    = FALSE
